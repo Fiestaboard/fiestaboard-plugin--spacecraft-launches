@@ -1,6 +1,8 @@
 """Unit tests for Spacecraft Launches plugin."""
 
+import json
 import pytest
+from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timezone, timedelta
 
@@ -409,8 +411,8 @@ class TestVariablesMatchManifest:
 
         assert result.available is True
         declared_vars = sample_manifest["variables"]["simple"]
-        for var in declared_vars:
-            assert var in result.data, f"Variable '{var}' declared in manifest but not in data"
+        for var_name in declared_vars.keys():
+            assert var_name in result.data, f"Variable '{var_name}' declared in manifest but not in data"
 
     @patch("plugins.spacecraft_launches.requests.get")
     def test_array_item_fields_present(self, mock_get, plugin, sample_config, sample_manifest, mock_launches_response):
@@ -430,3 +432,83 @@ class TestVariablesMatchManifest:
         first_launch = result.data["launches"][0]
         for field in declared_fields:
             assert field in first_launch, f"Array field '{field}' declared in manifest but not in launch data"
+
+
+class TestManifestMetadata:
+    """Test that manifest contains rich variable metadata."""
+
+    @pytest.fixture(autouse=True)
+    def load_manifest(self):
+        """Load manifest.json for metadata tests."""
+        manifest_path = Path(__file__).parent.parent / "manifest.json"
+        with open(manifest_path) as f:
+            self.manifest = json.load(f)
+
+    def test_simple_variables_are_dict(self):
+        """Simple variables should be a dict (rich metadata), not a list."""
+        simple = self.manifest["variables"]["simple"]
+        assert isinstance(simple, dict), "simple variables must be a dict with metadata, not a list"
+
+    def test_variable_groups_defined(self):
+        """Variable groups must be declared."""
+        groups = self.manifest["variables"]["groups"]
+        assert isinstance(groups, dict)
+        assert len(groups) > 0
+
+    def test_each_simple_var_has_required_fields(self):
+        """Every simple variable must have description, type, max_length, group, and example."""
+        required_keys = {"description", "type", "max_length", "group", "example"}
+        simple = self.manifest["variables"]["simple"]
+        for var_name, meta in simple.items():
+            missing = required_keys - set(meta.keys())
+            assert not missing, f"Variable '{var_name}' missing metadata keys: {missing}"
+
+    def test_variable_groups_reference_valid_groups(self):
+        """Every simple variable's group must reference a declared group."""
+        groups = set(self.manifest["variables"]["groups"].keys())
+        simple = self.manifest["variables"]["simple"]
+        for var_name, meta in simple.items():
+            assert meta["group"] in groups, (
+                f"Variable '{var_name}' references undeclared group '{meta['group']}'"
+            )
+
+    def test_variable_types_are_valid(self):
+        """Variable types must be recognized JSON Schema types."""
+        valid_types = {"string", "number", "integer", "boolean", "array", "object"}
+        simple = self.manifest["variables"]["simple"]
+        for var_name, meta in simple.items():
+            assert meta["type"] in valid_types, (
+                f"Variable '{var_name}' has invalid type '{meta['type']}'"
+            )
+
+    def test_max_length_is_positive_int(self):
+        """max_length must be a positive integer."""
+        simple = self.manifest["variables"]["simple"]
+        for var_name, meta in simple.items():
+            ml = meta["max_length"]
+            assert isinstance(ml, int) and ml > 0, (
+                f"Variable '{var_name}' max_length must be a positive int, got {ml}"
+            )
+
+    def test_array_variables_have_item_fields(self):
+        """Array variables must declare item_fields."""
+        arrays = self.manifest["variables"]["arrays"]
+        for arr_name, arr_meta in arrays.items():
+            assert "item_fields" in arr_meta, f"Array '{arr_name}' missing item_fields"
+            assert len(arr_meta["item_fields"]) > 0
+
+    def test_max_lengths_cover_array_fields(self):
+        """Every array item_field should have a corresponding max_lengths entry."""
+        arrays = self.manifest["variables"]["arrays"]
+        max_lengths = self.manifest.get("max_lengths", {})
+        for arr_name, arr_meta in arrays.items():
+            for field in arr_meta["item_fields"]:
+                key = f"{arr_name}.*.{field}"
+                assert key in max_lengths, f"max_lengths missing entry for '{key}'"
+
+    def test_group_labels_are_strings(self):
+        """Group labels must be non-empty strings."""
+        groups = self.manifest["variables"]["groups"]
+        for group_id, group_meta in groups.items():
+            assert "label" in group_meta, f"Group '{group_id}' missing 'label'"
+            assert isinstance(group_meta["label"], str) and len(group_meta["label"]) > 0
