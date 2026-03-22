@@ -12,98 +12,44 @@
   "settings_schema": {
     "type": "object",
     "properties": {
-      "enabled": {
-        "type": "boolean",
-        "title": "Enable Spacecraft Launches",
-        "default": false
-      },
-      "max_launches": {
-        "type": "integer",
-        "title": "Max Launches",
-        "description": "Maximum number of upcoming launches to display (1-10)",
-        "default": 4,
-        "minimum": 1,
-        "maximum": 10
-      },
-      "refresh_seconds": {
-        "type": "integer",
-        "title": "Refresh Interval (seconds)",
-        "description": "How often to fetch new data (minimum 240 seconds to respect 15 req/hr rate limit)",
-        "default": 300,
-        "minimum": 240
-      }
+      "enabled": {"type": "boolean", "title": "Enable Spacecraft Launches", "default": false},
+      "max_launches": {"type": "integer", "title": "Max Launches", "description": "Maximum number of upcoming launches to display (1-10)", "default": 4, "minimum": 1, "maximum": 10},
+      "refresh_seconds": {"type": "integer", "title": "Refresh Interval (seconds)", "description": "How often to fetch new data (minimum 240 seconds to respect 15 req/hr rate limit)", "default": 300, "minimum": 240}
     },
     "required": []
   },
   "env_vars": [
-    {
-      "name": "SPACECRAFT_LAUNCHES_ENABLED",
-      "required": false,
-      "description": "Enable spacecraft launches feature",
-      "default": "false"
-    },
-    {
-      "name": "SPACECRAFT_LAUNCHES_MAX_COUNT",
-      "required": false,
-      "description": "Maximum launches to display (default: 4)",
-      "default": "4"
-    },
-    {
-      "name": "SPACECRAFT_LAUNCHES_REFRESH_SECONDS",
-      "required": false,
-      "description": "Refresh interval in seconds (default: 300)",
-      "default": "300"
-    }
+    {"name": "SPACECRAFT_LAUNCHES_ENABLED", "required": false, "description": "Enable spacecraft launches feature", "default": "false"},
+    {"name": "SPACECRAFT_LAUNCHES_MAX_COUNT", "required": false, "description": "Maximum launches to display (default: 4)", "default": "4"},
+    {"name": "SPACECRAFT_LAUNCHES_REFRESH_SECONDS", "required": false, "description": "Refresh interval in seconds (default: 300)", "default": "300"}
   ],
   "variables": {
-    "simple": [
-      "name",
-      "status",
-      "net",
-      "countdown",
-      "pad",
-      "provider",
-      "rocket",
-      "mission",
-      "formatted",
-      "headers",
-      "launch_count",
-      "last_updated"
-    ],
+    "groups": {
+      "next_launch": {"label": "Next Launch"},
+      "display": {"label": "Display"}
+    },
+    "simple": {
+      "name": {"description": "Name of the next upcoming launch", "type": "string", "max_length": 22, "group": "next_launch", "example": "Falcon 9 | Starlink"},
+      "status": {"description": "Launch status (e.g., Go, TBD, Hold)", "type": "string", "max_length": 15, "group": "next_launch", "example": "Go for Launch"},
+      "net": {"description": "No Earlier Than date/time", "type": "string", "max_length": 20, "group": "next_launch", "example": "2025-03-15 14:30"},
+      "countdown": {"description": "Countdown to launch", "type": "string", "max_length": 12, "group": "next_launch", "example": "T-2d 5h 30m"},
+      "pad": {"description": "Launch pad name", "type": "string", "max_length": 20, "group": "next_launch", "example": "LC-39A"},
+      "provider": {"description": "Launch service provider", "type": "string", "max_length": 15, "group": "next_launch", "example": "SpaceX"},
+      "rocket": {"description": "Rocket name", "type": "string", "max_length": 15, "group": "next_launch", "example": "Falcon 9"},
+      "mission": {"description": "Mission description", "type": "string", "max_length": 22, "group": "next_launch", "example": "Starlink Group 12-1"},
+      "formatted": {"description": "Pre-formatted launch display", "type": "string", "max_length": 22, "group": "display", "example": "SpaceX T-2d 5h 30m"},
+      "headers": {"description": "Column headers for display", "type": "string", "max_length": 22, "group": "display", "example": "LAUNCH  STATUS  WHEN"},
+      "launch_count": {"description": "Number of tracked launches", "type": "number", "max_length": 2, "group": "display", "example": "4"},
+      "last_updated": {"description": "Timestamp of last data fetch", "type": "string", "max_length": 25, "group": "display", "example": "2025-03-15 10:00:00"}
+    },
     "arrays": {
       "launches": {
         "label_field": "name",
-        "item_fields": [
-          "name",
-          "status",
-          "status_abbrev",
-          "net",
-          "net_date",
-          "net_time",
-          "countdown",
-          "pad",
-          "pad_location",
-          "provider",
-          "rocket",
-          "mission",
-          "formatted"
-        ]
+        "item_fields": ["name", "status", "status_abbrev", "net", "net_date", "net_time", "countdown", "pad", "pad_location", "provider", "rocket", "mission", "formatted"]
       }
     }
   },
   "max_lengths": {
-    "name": 22,
-    "status": 15,
-    "net": 20,
-    "countdown": 12,
-    "pad": 20,
-    "provider": 15,
-    "rocket": 15,
-    "mission": 22,
-    "formatted": 22,
-    "headers": 22,
-    "launch_count": 2,
-    "last_updated": 25,
     "launches.*.name": 22,
     "launches.*.status": 15,
     "launches.*.status_abbrev": 7,
