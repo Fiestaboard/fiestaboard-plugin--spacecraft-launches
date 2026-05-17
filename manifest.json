@@ -1,7 +1,7 @@
 {
   "id": "spacecraft_launches",
   "name": "Spacecraft Launches",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Track upcoming spacecraft launch countdowns and statuses",
   "author": "FiestaBoard Team",
   "repository": "https://github.com/Fiestaboard/fiestaboard-plugin--spacecraft-launches",
@@ -202,41 +202,64 @@
     }
   ],
   "demo": {
-    "name": "Space Launches Demo",
-    "device_type": "flagship",
-    "template": [
-      "Next Launch",
-      "{{spacecraft_launches.name}}",
-      "{{spacecraft_launches.status}}",
-      "{{spacecraft_launches.net}}",
-      "{{spacecraft_launches.rocket}}",
-      "{{spacecraft_launches.provider}}"
-    ],
-    "line_metadata": [
-      {
-        "alignment": "center",
-        "wrap": false
-      },
-      {
-        "alignment": "center",
-        "wrap": true
-      },
-      {
-        "alignment": "center",
-        "wrap": false
-      },
-      {
-        "alignment": "center",
-        "wrap": false
-      },
-      {
-        "alignment": "center",
-        "wrap": false
-      },
-      {
-        "alignment": "center",
-        "wrap": false
-      }
-    ]
+    "flagship": {
+      "name": "Space Launches Demo",
+      "template": [
+        "Next Launch",
+        "{{spacecraft_launches.name}}",
+        "{{spacecraft_launches.status}}",
+        "{{spacecraft_launches.net}}",
+        "{{spacecraft_launches.rocket}}",
+        "{{spacecraft_launches.provider}}"
+      ],
+      "line_metadata": [
+        {
+          "alignment": "center",
+          "wrap": false
+        },
+        {
+          "alignment": "center",
+          "wrap": true
+        },
+        {
+          "alignment": "center",
+          "wrap": false
+        },
+        {
+          "alignment": "center",
+          "wrap": false
+        },
+        {
+          "alignment": "center",
+          "wrap": false
+        },
+        {
+          "alignment": "center",
+          "wrap": false
+        }
+      ]
+    },
+    "note": {
+      "name": "Next Launch (Note)",
+      "template": [
+        "NEXT LAUNCH",
+        "{{spacecraft_launches.rocket}}",
+        "{{spacecraft_launches.net}}"
+      ],
+      "line_metadata": [
+        {
+          "alignment": "left",
+          "wrap": false
+        },
+        {
+          "alignment": "left",
+          "wrap": true
+        },
+        {
+          "alignment": "left",
+          "wrap": false
+        }
+      ]
+    }
   }
 }
