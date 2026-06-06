@@ -138,18 +138,18 @@ class SpacecraftLaunchesPlugin(PluginBase):
             formatted = self._format_launch_line(net_date, net_time, mission or name, pad_name)
 
             return {
-                "name": name[:22],
-                "status": status_name[:15],
-                "status_abbrev": status_abbrev[:7],
-                "net": net_str[:20] if net_str else "",
+                "name": name,
+                "status": status_name,
+                "status_abbrev": status_abbrev,
+                "net": net_str if net_str else "",
                 "net_date": net_date,
                 "net_time": net_time,
                 "countdown": countdown,
-                "pad": pad_name[:20],
-                "pad_location": pad_location[:22],
-                "provider": provider[:15],
-                "rocket": rocket[:15],
-                "mission": (mission or name)[:22],
+                "pad": pad_name,
+                "pad_location": pad_location,
+                "provider": provider,
+                "rocket": rocket,
+                "mission": (mission or name),
                 "formatted": formatted,
             }
 
