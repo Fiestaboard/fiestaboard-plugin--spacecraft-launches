@@ -130,7 +130,7 @@ class TestParseLaunch:
         assert parsed["rocket"] == "Falcon 9"
         assert parsed["net_date"] == "03/15"
         assert parsed["net_time"] == "14:30"
-        assert parsed["pad"] == "Space Launch Complex"[:20]
+        assert parsed["pad"] == "Space Launch Complex 40"
 
     def test_parse_launch_no_mission(self, plugin, mock_launch_no_mission):
         """Test parsing a launch with no mission data."""
