@@ -201,6 +201,28 @@
       "primary": true
     }
   ],
+  "teaser": "FALCON 9 MAR 15",
+  "previews": [
+    {
+      "device_type": "flagship",
+      "rows": [
+        "{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}{64}",
+        "     NEXT LAUNCH",
+        " FALCON 9  STARLINK",
+        " CAPE CANAVERAL  FL",
+        "",
+        "     T - 02:15:30"
+      ]
+    },
+    {
+      "device_type": "note",
+      "rows": [
+        "NEXT LAUNCH",
+        "Falcon 9",
+        "MAR 15 14:30"
+      ]
+    }
+  ],
   "demo": {
     "flagship": {
       "name": "Space Launches Demo",
