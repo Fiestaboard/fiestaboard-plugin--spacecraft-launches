@@ -328,6 +328,29 @@ class TestFetchData:
         mock_get.assert_not_called()
 
     @patch("plugins.spacecraft_launches.requests.get")
+    def test_config_change_invalidates_cache(self, mock_get, plugin, sample_config, mock_launches_response):
+        """Test a config change drops the cache instead of serving the old list."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_launches_response
+        mock_get.return_value = mock_response
+
+        plugin.config = sample_config
+        plugin._cache = {
+            "launches": [{"name": "Cached Launch"}],
+            "launch_count": 1,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Same cache window, fewer launches requested: the cached list is now wrong
+        plugin.config = {**sample_config, "max_launches": 2}
+        assert plugin._cache is None
+
+        result = plugin.fetch_data()
+        assert result.available is True
+        mock_get.assert_called_once()
+
+    @patch("plugins.spacecraft_launches.requests.get")
     def test_fetch_data_respects_max_launches(self, mock_get, plugin, mock_launches_response):
         """Test max_launches limits results."""
         mock_response = Mock()
