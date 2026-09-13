@@ -44,6 +44,16 @@ class SpacecraftLaunchesPlugin(PluginBase):
 
         return errors
 
+    def on_config_change(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
+        """Drop the cached launches so a config change takes effect immediately.
+
+        The cache is keyed only on age, so without this a change to
+        `max_launches` would keep serving the old-sized list for up to
+        refresh_seconds.
+        """
+        self._cache = None
+        logger.debug("Cleared cached launches after config change")
+
     @staticmethod
     def _compute_countdown(net_str: str) -> str:
         """Compute countdown string from a NET datetime string.
