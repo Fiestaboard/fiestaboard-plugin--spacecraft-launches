@@ -9,13 +9,71 @@ from datetime import datetime, timezone
 import logging
 import requests
 
+from src.devices import BoardContext
 from src.plugins.base import PluginBase, PluginResult
+from src.text_to_board import count_tiles
 
 logger = logging.getLogger(__name__)
 
 # Launch Library 2 API
 LL2_BASE_URL = "https://ll.thespacedevs.com/2.3.0"
 LL2_LAUNCHES_URL = f"{LL2_BASE_URL}/launches/upcoming/"
+
+# self.board is None outside a board-scoped render (legacy callers, unit
+# tests). Treat that as "assume a Flagship" rather than crashing -- never a
+# bare 22/6 literal on the rendering path itself, just this one fallback.
+DEFAULT_BOARD = BoardContext.from_device_type("flagship")
+
+
+def _clip_to_width(text: str, width: int) -> str:
+    """Clip *text* to at most *width* tiles (not characters).
+
+    This plugin's board content never contains colour markers, so tile
+    count equals character count today -- but measuring with
+    ``count_tiles`` keeps the guarantee correct if that ever changes,
+    rather than silently overstating width via ``len()``.
+    """
+    if count_tiles(text) <= width:
+        return text
+    return text[:width]
+
+
+def _header_row_count(board: BoardContext) -> int:
+    """How many rows the title/column-header block takes on *board*.
+
+    A 3-row board (a Note, or a 1x1 note array) can only spare one row for
+    a header before there is nothing left to show; anything taller can
+    afford both a title row and a column-header row, matching the
+    Flagship's historical two-line header.
+    """
+    return 1 if board.rows <= 3 else 2
+
+
+def _launch_capacity(board: BoardContext) -> int:
+    """How many launch rows fit on *board* once the header is accounted for."""
+    return max(0, board.rows - _header_row_count(board))
+
+
+def _title_for_width(cols: int) -> str:
+    """Board title, abbreviated to fit narrower boards instead of clipping mid-word."""
+    if cols >= 16:
+        text = "EARTH DEPARTURES"
+    elif cols >= 10:
+        text = "DEPARTURES"
+    else:
+        text = "LAUNCHES"
+    return _clip_to_width(text, cols).center(cols)
+
+
+def _column_header_for_width(cols: int) -> str:
+    """Column header, abbreviated to fit narrower boards."""
+    if cols >= 18:
+        text = "DATE TIME MISSION"
+    elif cols >= 12:
+        text = "DATE MISSION"
+    else:
+        text = "MISSION"
+    return _clip_to_width(text, cols)
 
 
 class SpacecraftLaunchesPlugin(PluginBase):
@@ -28,30 +86,47 @@ class SpacecraftLaunchesPlugin(PluginBase):
     def __init__(self, manifest: Dict[str, Any]):
         """Initialize the spacecraft launches plugin."""
         super().__init__(manifest)
-        self._cache: Optional[Dict[str, Any]] = None
+        # Resilience cache: last-known-good fetch, served back on a rate
+        # limit or outage so a blip doesn't blank the board. Keyed by board
+        # geometry (mirrors PluginBase._cache_key) -- a single unkeyed cache
+        # would serve one board's frame to a different-shaped board.
+        self._cache: Dict[str, Dict[str, Any]] = {}
 
     @property
     def plugin_id(self) -> str:
         return "spacecraft_launches"
+
+    @staticmethod
+    def _geometry_key(board: BoardContext) -> str:
+        """Cache key for *board*'s shape, mirroring ``PluginBase._cache_key``.
+
+        Flagship and Note have fixed sizes, so device_type alone is a
+        sufficient key; note arrays share device_type but vary in size, so
+        their resolved dimensions are folded in to avoid collisions between,
+        e.g., a 30x3 and a 15x6 array.
+        """
+        if board.device_type == "note_array":
+            return f"note_array:{board.cols}x{board.rows}"
+        return board.device_type
 
     def validate_config(self, config: Dict[str, Any]) -> List[str]:
         """Validate spacecraft launches configuration."""
         errors = []
 
         max_launches = config.get("max_launches", 4)
-        if not isinstance(max_launches, int) or not (1 <= max_launches <= 10):
-            errors.append("Max launches must be between 1 and 10")
+        if not isinstance(max_launches, int) or not (1 <= max_launches <= 24):
+            errors.append("Max launches must be between 1 and 24")
 
         return errors
 
     def on_config_change(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
         """Drop the cached launches so a config change takes effect immediately.
 
-        The cache is keyed only on age, so without this a change to
-        `max_launches` would keep serving the old-sized list for up to
-        refresh_seconds.
+        The cache is keyed only on age (per geometry), so without this a
+        change to `max_launches` would keep serving the old-sized list for
+        up to refresh_seconds on every board.
         """
-        self._cache = None
+        self._cache = {}
         logger.debug("Cleared cached launches after config change")
 
     @staticmethod
@@ -84,6 +159,20 @@ class SpacecraftLaunchesPlugin(PluginBase):
                 return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
         except (ValueError, TypeError):
             return "TBD"
+
+    def _cap(self, field: str, value: str) -> str:
+        """Clip *value* to the manifest's declared ``launches.*.<field>`` bound.
+
+        The Launch Library API returns free-text (names, pad and location
+        strings) with no length guarantee of its own. The page editor sizes
+        templates from ``max_lengths``, so a value that runs longer than its
+        declared bound makes the editor's fit warnings wrong -- this is what
+        keeps that declaration honest regardless of what the API hands back.
+        """
+        limit = (self._manifest.get("max_lengths") or {}).get(f"launches.*.{field}")
+        if isinstance(limit, int) and limit > 0 and count_tiles(value) > limit:
+            return value[:limit]
+        return value
 
     def _parse_launch(self, launch: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Parse a single launch object from the API response.
@@ -143,24 +232,28 @@ class SpacecraftLaunchesPlugin(PluginBase):
                 # Fallback: extract mission from launch name (after " | ")
                 if " | " in name:
                     mission = name.split(" | ", 1)[1].strip()
+            mission = mission or name
 
-            # Format display line
-            formatted = self._format_launch_line(net_date, net_time, mission or name, pad_name)
+            # Raw display line: intentionally NOT sized to any board here --
+            # this is per-item template data, not a rendered board row, so it
+            # must not bake in an assumed target width. Board-shaped output
+            # is built separately in `_render_lines`, from the actual board.
+            formatted = self._format_launch_line(net_date, net_time, mission, pad_name)
 
             return {
-                "name": name,
-                "status": status_name,
-                "status_abbrev": status_abbrev,
-                "net": net_str if net_str else "",
+                "name": self._cap("name", name),
+                "status": self._cap("status", status_name),
+                "status_abbrev": self._cap("status_abbrev", status_abbrev),
+                "net": self._cap("net", net_str if net_str else ""),
                 "net_date": net_date,
                 "net_time": net_time,
-                "countdown": countdown,
-                "pad": pad_name,
-                "pad_location": pad_location,
-                "provider": provider,
-                "rocket": rocket,
-                "mission": (mission or name),
-                "formatted": formatted,
+                "countdown": self._cap("countdown", countdown),
+                "pad": self._cap("pad", pad_name),
+                "pad_location": self._cap("pad_location", pad_location),
+                "provider": self._cap("provider", provider),
+                "rocket": self._cap("rocket", rocket),
+                "mission": self._cap("mission", mission),
+                "formatted": self._cap("formatted", formatted),
             }
 
         except (ValueError, TypeError, KeyError) as e:
@@ -174,36 +267,118 @@ class SpacecraftLaunchesPlugin(PluginBase):
         Format: MM/DD HH:MM MISSION
         Example: 03/15 14:30 CREW-12
 
+        Deliberately unbounded: this is raw per-item data exposed as a
+        template variable (``launches.*.formatted``), not a board row, so it
+        must not assume any particular target board width. Callers that
+        place this on a specific board size it themselves; `_parse_launch`
+        separately caps it to the manifest's own declared bound.
+
         Args:
             date: Date string (MM/DD).
             time: Time string (HH:MM).
             mission: Mission name.
-            pad: Pad name.
+            pad: Pad name (unused; kept for call-site compatibility).
 
         Returns:
-            Formatted string (max 22 chars).
+            Formatted string, e.g. "03/15 14:30 CREW-12".
         """
         prefix = f"{date} {time} " if date and time else ""
-        remaining = 22 - len(prefix)
-        mission_display = mission[:remaining] if remaining > 0 else ""
-        formatted = f"{prefix}{mission_display}"
-        return formatted[:22]
+        return f"{prefix}{mission}"
+
+    def _launch_line(self, launch: Dict[str, Any], cols: int) -> str:
+        """Render one launch as a single board row exactly *cols* wide.
+
+        Reflows rather than truncates blindly: on a wide board the mission
+        gets more room; on a narrow one the date/time prefix is abbreviated
+        away first so the mission itself still gets some space.
+        """
+        date = launch.get("net_date", "")
+        time = launch.get("net_time", "")
+        mission = launch.get("mission") or launch.get("name") or ""
+
+        if cols >= 20 and date and time:
+            prefix = f"{date} {time} "
+        elif cols >= 12 and date:
+            prefix = f"{date} "
+        else:
+            prefix = ""
+
+        available = max(0, cols - len(prefix))
+        line = f"{prefix}{mission[:available]}" if available > 0 else ""
+        return _clip_to_width(line, cols)
+
+    def _render_lines(self, launches: List[Dict[str, Any]], board: BoardContext) -> List[str]:
+        """Render *launches* to fit *board* exactly.
+
+        Every dimension comes from *board* -- never a literal 22 or 6. Never
+        more than ``board.rows`` rows, never a row wider than ``board.cols``.
+        A taller board gets more launch rows (reflow), not a blank panel.
+        """
+        rows, cols = board.rows, board.cols
+        if rows <= 0 or cols <= 0:
+            return []
+
+        header_count = _header_row_count(board)
+        capacity = _launch_capacity(board)
+
+        lines: List[str] = [_title_for_width(cols)]
+        if header_count == 2:
+            lines.append(_column_header_for_width(cols))
+
+        if not launches:
+            lines.append(_clip_to_width("NO UPCOMING LAUNCHES", cols))
+        else:
+            for launch in launches[:capacity]:
+                lines.append(self._launch_line(launch, cols))
+
+        while len(lines) < rows:
+            lines.append("")
+        return lines[:rows]
+
+    def _empty_result_data(self) -> Dict[str, Any]:
+        """Template-variable payload for "no upcoming launches"."""
+        return {
+            "launch_count": 0,
+            "launches": [],
+            "name": "",
+            "status": "No launches",
+            "net": "",
+            "countdown": "",
+            "pad": "",
+            "provider": "",
+            "rocket": "",
+            "mission": "",
+            "formatted": "NO UPCOMING LAUNCHES",
+            "headers": "DATE TIME MISSION",
+            "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        }
 
     def fetch_data(self) -> PluginResult:
         """Fetch upcoming spacecraft launch data from Launch Library 2 API."""
+        # self.board is set by the render pipeline around this call; None
+        # outside a board-scoped render (unit tests, legacy callers).
+        board = self.board or DEFAULT_BOARD
+        geo_key = self._geometry_key(board)
+
         max_launches = self.config.get("max_launches", 4)
         refresh_seconds = self.config.get("refresh_seconds", 300)
 
+        cached = self._cache.get(geo_key)
+
         # Check cache first
-        if self._cache and self._cache.get("launches"):
-            last_updated = self._cache.get("last_updated", "")
+        if cached and cached.get("launches"):
+            last_updated = cached.get("last_updated", "")
             if last_updated:
                 try:
                     cache_time = datetime.fromisoformat(last_updated.replace("Z", "+00:00"))
                     age_seconds = (datetime.now(timezone.utc) - cache_time).total_seconds()
                     if age_seconds < refresh_seconds:
-                        logger.debug(f"Using cached data (age: {age_seconds:.0f}s < {refresh_seconds}s)")
-                        return PluginResult(available=True, data=self._cache)
+                        logger.debug(f"Using cached data for {geo_key} (age: {age_seconds:.0f}s < {refresh_seconds}s)")
+                        return PluginResult(
+                            available=True,
+                            data=cached,
+                            formatted_lines=self._render_lines(cached.get("launches", []), board),
+                        )
                 except Exception:
                     pass
 
@@ -218,8 +393,12 @@ class SpacecraftLaunchesPlugin(PluginBase):
             # Handle rate limiting
             if response.status_code == 429:
                 logger.warning("Launch Library 2 API rate limit exceeded, using cached data if available")
-                if self._cache and self._cache.get("launches"):
-                    return PluginResult(available=True, data=self._cache)
+                if cached and cached.get("launches"):
+                    return PluginResult(
+                        available=True,
+                        data=cached,
+                        formatted_lines=self._render_lines(cached.get("launches", []), board),
+                    )
                 return PluginResult(
                     available=False,
                     error="API rate limit exceeded (15 req/hr). Please wait."
@@ -227,8 +406,12 @@ class SpacecraftLaunchesPlugin(PluginBase):
 
             if response.status_code != 200:
                 logger.error(f"Launch Library 2 API error: {response.status_code}")
-                if self._cache and self._cache.get("launches"):
-                    return PluginResult(available=True, data=self._cache)
+                if cached and cached.get("launches"):
+                    return PluginResult(
+                        available=True,
+                        data=cached,
+                        formatted_lines=self._render_lines(cached.get("launches", []), board),
+                    )
                 return PluginResult(
                     available=False,
                     error=f"API error: {response.status_code}"
@@ -240,21 +423,8 @@ class SpacecraftLaunchesPlugin(PluginBase):
             if not results:
                 return PluginResult(
                     available=True,
-                    data={
-                        "launch_count": 0,
-                        "launches": [],
-                        "name": "",
-                        "status": "No launches",
-                        "net": "",
-                        "countdown": "",
-                        "pad": "",
-                        "provider": "",
-                        "rocket": "",
-                        "mission": "",
-                        "formatted": "NO UPCOMING LAUNCHES",
-                        "headers": "DATE TIME MISSION",
-                        "last_updated": datetime.now(timezone.utc).isoformat(),
-                    }
+                    data=self._empty_result_data(),
+                    formatted_lines=self._render_lines([], board),
                 )
 
             # Parse launches
@@ -269,21 +439,8 @@ class SpacecraftLaunchesPlugin(PluginBase):
             if not launches:
                 return PluginResult(
                     available=True,
-                    data={
-                        "launch_count": 0,
-                        "launches": [],
-                        "name": "",
-                        "status": "No launches",
-                        "net": "",
-                        "countdown": "",
-                        "pad": "",
-                        "provider": "",
-                        "rocket": "",
-                        "mission": "",
-                        "formatted": "NO UPCOMING LAUNCHES",
-                        "headers": "DATE TIME MISSION",
-                        "last_updated": datetime.now(timezone.utc).isoformat(),
-                    }
+                    data=self._empty_result_data(),
+                    formatted_lines=self._render_lines([], board),
                 )
 
             # Primary launch (next upcoming)
@@ -304,53 +461,55 @@ class SpacecraftLaunchesPlugin(PluginBase):
                 "headers": "DATE TIME MISSION",
                 # Aggregate
                 "launch_count": len(launches),
-                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "last_updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 # Array of all launches
                 "launches": launches,
             }
 
-            self._cache = result_data
-            return PluginResult(available=True, data=result_data)
+            self._cache[geo_key] = result_data
+            return PluginResult(
+                available=True,
+                data=result_data,
+                formatted_lines=self._render_lines(launches, board),
+            )
 
         except requests.exceptions.RequestException as e:
             logger.exception("Error fetching launch data")
-            if self._cache and self._cache.get("launches"):
-                return PluginResult(available=True, data=self._cache)
+            if cached and cached.get("launches"):
+                return PluginResult(
+                    available=True,
+                    data=cached,
+                    formatted_lines=self._render_lines(cached.get("launches", []), board),
+                )
             return PluginResult(available=False, error=f"Network error: {str(e)}")
         except Exception as e:
             logger.exception("Unexpected error fetching launch data")
-            if self._cache and self._cache.get("launches"):
-                return PluginResult(available=True, data=self._cache)
+            if cached and cached.get("launches"):
+                return PluginResult(
+                    available=True,
+                    data=cached,
+                    formatted_lines=self._render_lines(cached.get("launches", []), board),
+                )
             return PluginResult(available=False, error=str(e))
 
     def get_formatted_display(self) -> Optional[List[str]]:
-        """Return default formatted launch display."""
-        if not self._cache:
-            result = self.fetch_data()
-            if not result.available:
-                return None
+        """Return a formatted launch display sized to `self.board`.
 
-        data = self._cache
-        if not data:
+        `self.board` is bound by the conformance suite (and, were core ever
+        to call this hook, by the render pipeline) for the duration of the
+        call; it defaults to a Flagship when unbound, matching `fetch_data`.
+        """
+        board = self.board or DEFAULT_BOARD
+        result = self.fetch_data()
+        if not result.available or not result.data:
             return None
 
-        launches = data.get("launches", [])
-        lines = [
-            "EARTH DEPARTURES".center(22),
-            "DATE TIME MISSION",
-        ]
-
-        for launch in launches[:4]:
-            lines.append(launch.get("formatted", "")[:22])
-
-        while len(lines) < 6:
-            lines.append("")
-
-        return lines[:6]
+        launches = result.data.get("launches", [])
+        return self._render_lines(launches, board)
 
     def cleanup(self) -> None:
         """Cleanup when plugin is disabled."""
-        self._cache = None
+        self._cache = {}
 
 
 # Export the plugin class

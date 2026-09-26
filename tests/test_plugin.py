@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock, patch, MagicMock
 from datetime import datetime, timezone, timedelta
 
+from src.devices import BoardContext
+
 from plugins.spacecraft_launches import SpacecraftLaunchesPlugin
 
 
@@ -24,7 +26,7 @@ class TestPluginInitialization:
 
     def test_plugin_initialization(self, plugin):
         """Test plugin initializes correctly."""
-        assert plugin._cache is None
+        assert plugin._cache == {}
 
 
 class TestConfigurationValidation:
@@ -41,10 +43,17 @@ class TestConfigurationValidation:
         assert errors == []
 
     def test_validate_config_invalid_max_launches_too_high(self, plugin):
-        """Test validation fails with max_launches > 10."""
-        config = {"max_launches": 11}
+        """Test validation fails with max_launches > 24."""
+        config = {"max_launches": 25}
         errors = plugin.validate_config(config)
         assert any("Max launches" in e for e in errors)
+
+    def test_validate_config_max_launches_raised_ceiling(self, plugin):
+        """24 is now valid: the ceiling was raised so a Note Array panel can
+        be configured to show as many launches as it has rows for."""
+        config = {"max_launches": 24}
+        errors = plugin.validate_config(config)
+        assert errors == []
 
     def test_validate_config_invalid_max_launches_too_low(self, plugin):
         """Test validation fails with max_launches < 1."""
@@ -172,26 +181,33 @@ class TestParseLaunch:
 
 
 class TestFormatting:
-    """Test display formatting."""
+    """Test display formatting.
+
+    `_format_launch_line` is raw per-item template data (`launches.*.formatted`),
+    not a rendered board row -- it must NOT assume any particular target board
+    width. Board-shaped output that actually fits a board is built separately
+    by `_render_lines` from the board being rendered.
+    """
 
     def test_format_launch_line(self, plugin):
         """Test launch line formatting."""
         formatted = plugin._format_launch_line("03/15", "14:30", "CREW-12", "SLC-40")
-        assert len(formatted) <= 22
-        assert "03/15" in formatted
-        assert "14:30" in formatted
-        assert "CREW-12" in formatted
+        assert formatted == "03/15 14:30 CREW-12"
 
-    def test_format_launch_line_long_mission(self, plugin):
-        """Test formatting truncates long mission names."""
-        formatted = plugin._format_launch_line("03/15", "14:30", "VERY LONG MISSION NAME HERE", "SLC-40")
-        assert len(formatted) <= 22
+    def test_format_launch_line_long_mission_is_not_truncated(self, plugin):
+        """The raw field is unbounded -- it must not bake in a board width.
+
+        (`_parse_launch` separately caps the value it stores to the
+        manifest's own declared bound; that is covered by TestManifestHonesty.)
+        """
+        long_mission = "VERY LONG MISSION NAME HERE THAT EXCEEDS TWENTY TWO CHARACTERS"
+        formatted = plugin._format_launch_line("03/15", "14:30", long_mission, "SLC-40")
+        assert formatted == f"03/15 14:30 {long_mission}"
 
     def test_format_launch_line_no_date(self, plugin):
         """Test formatting with no date/time."""
         formatted = plugin._format_launch_line("", "", "CREW-12", "SLC-40")
-        assert len(formatted) <= 22
-        assert "CREW-12" in formatted
+        assert formatted == "CREW-12"
 
 
 class TestFetchData:
@@ -252,8 +268,10 @@ class TestFetchData:
 
         plugin.config = sample_config
         plugin._cache = {
-            "launches": [{"name": "Cached Launch"}],
-            "launch_count": 1,
+            "flagship": {
+                "launches": [{"name": "Cached Launch"}],
+                "launch_count": 1,
+            }
         }
 
         result = plugin.fetch_data()
@@ -281,8 +299,10 @@ class TestFetchData:
 
         plugin.config = sample_config
         plugin._cache = {
-            "launches": [{"name": "Cached Launch"}],
-            "launch_count": 1,
+            "flagship": {
+                "launches": [{"name": "Cached Launch"}],
+                "launch_count": 1,
+            }
         }
 
         result = plugin.fetch_data()
@@ -306,8 +326,10 @@ class TestFetchData:
 
         plugin.config = sample_config
         plugin._cache = {
-            "launches": [{"name": "Cached Launch"}],
-            "launch_count": 1,
+            "flagship": {
+                "launches": [{"name": "Cached Launch"}],
+                "launch_count": 1,
+            }
         }
 
         result = plugin.fetch_data()
@@ -318,9 +340,11 @@ class TestFetchData:
         """Test that fresh cache is used instead of API call."""
         plugin.config = sample_config
         plugin._cache = {
-            "launches": [{"name": "Cached Launch"}],
-            "launch_count": 1,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "flagship": {
+                "launches": [{"name": "Cached Launch"}],
+                "launch_count": 1,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
         }
 
         result = plugin.fetch_data()
@@ -337,14 +361,16 @@ class TestFetchData:
 
         plugin.config = sample_config
         plugin._cache = {
-            "launches": [{"name": "Cached Launch"}],
-            "launch_count": 1,
-            "last_updated": datetime.now(timezone.utc).isoformat(),
+            "flagship": {
+                "launches": [{"name": "Cached Launch"}],
+                "launch_count": 1,
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+            }
         }
 
         # Same cache window, fewer launches requested: the cached list is now wrong
         plugin.config = {**sample_config, "max_launches": 2}
-        assert plugin._cache is None
+        assert plugin._cache == {}
 
         result = plugin.fetch_data()
         assert result.available is True
@@ -408,14 +434,105 @@ class TestFormattedDisplay:
             assert lines is None
 
 
+class TestBoardAdaptivity:
+    """Layout must be derived from `self.board`, never a hardcoded 22x6."""
+
+    @patch("plugins.spacecraft_launches.requests.get")
+    def test_get_formatted_display_defaults_to_flagship_when_unbound(
+        self, mock_get, plugin, sample_config, mock_launches_response
+    ):
+        """self.board is None outside a board-scoped render; must default to
+        a Flagship rather than crash (matches fetch_data's own fallback)."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_launches_response
+        mock_get.return_value = mock_response
+
+        plugin.config = sample_config
+        lines = plugin.get_formatted_display()  # self.board is unbound here
+
+        flagship = BoardContext.from_device_type("flagship")
+        assert lines is not None
+        assert len(lines) == flagship.rows
+        assert all(len(line) <= flagship.cols for line in lines)
+
+    @patch("plugins.spacecraft_launches.requests.get")
+    def test_get_formatted_display_fits_a_note(self, mock_get, plugin, sample_config, mock_launches_response):
+        """A Note (15x3) must get exactly 3 rows, none wider than 15 tiles --
+        not the Flagship's 6x22 frame."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_launches_response
+        mock_get.return_value = mock_response
+
+        plugin.config = sample_config
+        note = BoardContext.from_device_type("note")
+        with plugin._bound_board(note):
+            lines = plugin.get_formatted_display()
+
+        assert lines is not None
+        assert len(lines) == note.rows
+        assert all(len(line) <= note.cols for line in lines)
+
+    @patch("plugins.spacecraft_launches.requests.get")
+    def test_taller_note_array_shows_more_launches_than_a_note(
+        self, mock_get, plugin, mock_launches_response
+    ):
+        """A taller board must reflow to more list items, not stay capped at
+        whatever a Note has room for -- the bug this fix removes was a
+        hardcoded `launches[:4]` regardless of board size."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_launches_response
+        mock_get.return_value = mock_response
+
+        # Plenty of launches available so the taller board genuinely has
+        # more to show, not just "ran out of content".
+        plugin.config = {"max_launches": 24, "refresh_seconds": 300}
+
+        note = BoardContext.from_device_type("note")
+        with plugin._bound_board(note):
+            note_lines = plugin.get_formatted_display()
+
+        tall_array = BoardContext(device_type="note_array", rows=24, cols=15)
+        with plugin._bound_board(tall_array):
+            tall_lines = plugin.get_formatted_display()
+
+        note_content_rows = sum(1 for line in note_lines if line.strip())
+        tall_content_rows = sum(1 for line in tall_lines if line.strip())
+        assert tall_content_rows > note_content_rows
+
+    @patch("plugins.spacecraft_launches.requests.get")
+    def test_own_resilience_cache_is_keyed_by_board_geometry(
+        self, mock_get, plugin, sample_config, mock_launches_response
+    ):
+        """A Flagship's fetch must not populate a Note's cache slot, or one
+        board's stale frame ends up served to a differently-shaped board."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = mock_launches_response
+        mock_get.return_value = mock_response
+
+        plugin.config = sample_config
+        flagship = BoardContext.from_device_type("flagship")
+        note = BoardContext.from_device_type("note")
+
+        with plugin._bound_board(flagship):
+            plugin.fetch_data()
+        with plugin._bound_board(note):
+            plugin.fetch_data()
+
+        assert set(plugin._cache.keys()) == {"flagship", "note"}
+
+
 class TestCleanup:
     """Test plugin cleanup."""
 
     def test_cleanup(self, plugin):
         """Test cleanup clears cache."""
-        plugin._cache = {"some": "data"}
+        plugin._cache = {"flagship": {"some": "data"}}
         plugin.cleanup()
-        assert plugin._cache is None
+        assert plugin._cache == {}
 
 
 class TestVariablesMatchManifest:
@@ -535,3 +652,42 @@ class TestManifestMetadata:
         for group_id, group_meta in groups.items():
             assert "label" in group_meta, f"Group '{group_id}' missing 'label'"
             assert isinstance(group_meta["label"], str) and len(group_meta["label"]) > 0
+
+
+class TestManifestHonesty:
+    """`max_lengths` must bound what the code actually emits, not just what
+    a short test fixture happens to produce -- the Launch Library API's
+    text fields (names, pads, locations) carry no length guarantee."""
+
+    @pytest.fixture(autouse=True)
+    def load_manifest(self):
+        manifest_path = Path(__file__).parent.parent / "manifest.json"
+        with open(manifest_path) as f:
+            self.manifest = json.load(f)
+
+    @pytest.mark.parametrize(
+        "field",
+        ["name", "status", "net", "pad", "pad_location", "provider", "rocket", "mission", "formatted"],
+    )
+    def test_parsed_field_never_exceeds_its_declared_bound(self, plugin, field):
+        """Feed in a launch whose every text field is absurdly long and
+        confirm the parsed result is still clipped to the manifest's own
+        `launches.*.<field>` bound."""
+        very_long = "X" * 200
+        launch = {
+            "name": f"{very_long} | {very_long}",
+            "status": {"name": very_long, "abbrev": very_long},
+            "net": "2026-03-15T14:30:00Z",
+            "pad": {"name": very_long, "location": {"name": very_long}},
+            "launch_service_provider": {"name": very_long},
+            "rocket": {"configuration": {"name": very_long}},
+            "mission": {"name": very_long},
+        }
+        parsed = plugin._parse_launch(launch)
+        assert parsed is not None
+
+        limit = self.manifest["max_lengths"][f"launches.*.{field}"]
+        assert len(parsed[field]) <= limit, (
+            f"launches.*.{field} declares max_length {limit} but code emitted "
+            f"{len(parsed[field])} for absurdly long input data"
+        )
