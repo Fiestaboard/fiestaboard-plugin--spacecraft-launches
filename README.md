@@ -26,7 +26,7 @@ The Spacecraft Launches plugin fetches upcoming launch data from the [Launch Lib
 
 ```
 1. Configuration
-   ├─ Max launches (1-10)
+   ├─ Max launches (1-24)
    └─ Refresh interval (min 240 seconds)
 
 2. API Request
@@ -141,9 +141,16 @@ if " | " in name:
 
 ### Display Formatting
 
-The plugin formats launches similar to an airport departure board:
+The plugin formats launches similar to an airport departure board. Layout is
+derived from the board actually rendering (`self.board`), never hardcoded:
+the header collapses to one line on a 3-row board, the launch list grows to
+fill however many rows are available (a tall Note Array shows more launches,
+not four), and the date/time prefix on each line abbreviates away first on
+narrow boards so the mission still gets some room. `formatted_lines` (the
+live rendering path) and `get_formatted_display()` (the documented hook)
+share this logic.
 
-**Example Display:**
+**Example Display (Flagship, 22x6):**
 ```
    EARTH DEPARTURES
 DATE TIME MISSION
@@ -185,12 +192,12 @@ DATE TIME MISSION
 
 ### Optional Settings
 
-- `max_launches`: Maximum launches to display (default: 4, max: 10)
+- `max_launches`: Maximum launches to display (default: 4, max: 24)
 - `refresh_seconds`: Update interval (default: 300, min: 240)
 
 ### Validation
 
-- Max launches: 1 to 10
+- Max launches: 1 to 24
 - Refresh: >= 240 seconds
 
 ## Template Variables
@@ -294,8 +301,8 @@ Current: >80% code coverage (meets target)
 
 ### Memory
 
-- Caches single response (small footprint)
-- Limits launch array to max_launches (default: 4)
+- Caches one response per board geometry (small footprint)
+- Limits launch array to max_launches (default: 4), further capped to what the rendering board has room for
 
 ## References
 

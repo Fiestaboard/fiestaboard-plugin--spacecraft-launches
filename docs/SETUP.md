@@ -67,7 +67,7 @@ Available variables:
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | enabled | boolean | false | Enable/disable the plugin |
-| max_launches | integer | 4 | Maximum launches to display (1-10) |
+| max_launches | integer | 4 | Maximum launches to display (1-24) |
 | refresh_seconds | integer | 300 | Update interval (minimum 240 seconds) |
 
 ### Environment Variables
